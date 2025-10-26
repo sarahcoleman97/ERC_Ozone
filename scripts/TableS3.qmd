@@ -1,0 +1,61 @@
+---
+title: "TableS3"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(knitr)
+```
+
+# SI Table 3: unique days and stations used in analysis
+
+```{r}
+#| label: table_si_3
+
+regions <- c('arr', 'dfw', 'elp', 'hgb', 'san')
+files <- paste0("../data/dfs_timeOfDay/",regions)
+df_list <- vector(mode = 'list', length = length(regions))
+names(files) <- regions
+names(df_list) <- regions
+
+# Read data
+all_df <- lapply(regions, function(region){
+  rds <- readRDS(files[[region]]) |> 
+    mutate(OAD = region)
+}) |> bind_rows() |> 
+  drop_na(Year)
+
+# Get count of OADs by region and year
+num_oads <- all_df |> 
+  filter(IsOAD == 1) |> # only OADs
+  group_by(OAD, Year) |> 
+  summarise(noad = n_distinct(Date), .groups = 'drop')
+
+# Get unique number of stations and days by region and year
+num_days_data <- all_df |>  
+  group_by(OAD, Year) |> 
+  summarise(nd = n_distinct(Date),
+            ns = n_distinct(Station), .groups = 'drop') 
+
+# Format into final df
+final_df <- full_join(num_oads, num_days_data, by = c('OAD', 'Year')) |> 
+  replace_na(list(noad = 0)) |> 
+  pivot_wider(names_from = OAD, 
+              values_from = c('noad','nd','ns'), 
+              names_vary = 'slowest') |>
+  arrange(desc(Year)) 
+
+# Output table
+options(knitr.kable.NA = '') # make NA appear blank
+kable(final_df, format = 'latex', 
+      booktabs = TRUE,
+      escape = FALSE,
+      linesep = "") 
+
+kable(final_df, format = 'html', booktabs = 'TRUE')
+```

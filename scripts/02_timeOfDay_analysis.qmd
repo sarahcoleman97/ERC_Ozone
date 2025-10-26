@@ -1,0 +1,85 @@
+---
+title: "02_timeOfDay_analysis"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: initalize
+#| include: false
+
+library(tidyverse)
+library(emmeans)
+
+eval <- FALSE # set this to FALSE to run nothing
+```
+
+# Analysis function
+
+Notes: includes time of day, adds OAD/holiday interaction
+
+```{r, eval = eval}
+#| label: analysis
+
+regions <- c('arr', 'dfw', 'elp', 'hgb', 'san')
+options(contrasts = c("contr.sum", "contr.poly"))
+
+analysis <- lapply(regions, function(region){
+
+  # Read data
+  df <- readRDS(paste0('../data/dfs_timeOfDay/',region)) |> 
+    mutate(IsOAD = factor(IsOAD, levels = c(1,0))) # for contrasts
+  
+  # Model equation
+  eqn_quasi <- TrafficCount ~ TrafficType + Station + TimeOfDay + # traffic info
+    IsOAD + AQI_Cat + # aqi
+    Weekday + Holiday +  Month + Year + # datetime
+    MeanT + Precip + Sunshine_Hrs + RelativeH + WindSpeed + WMO + # weather
+    IsOAD:TimeOfDay + IsOAD:TrafficType + #No OAD/AQI int
+    IsOAD:Holiday + # OAD/Holiday int +
+    TimeOfDay:TrafficType + TimeOfDay:AQI_Cat + TrafficType:AQI_Cat + # other ints
+    offset(log(Hours)) # adding offset
+  
+  # Fit model
+  model_quasi <- glm(eqn_quasi, family = quasipoisson, data = df) 
+  
+  # Compute emmeans
+  at = list(TrafficType = c("Bic","Ped")) 
+  em <- emmeans(model_quasi, 
+                ~ IsOAD + TimeOfDay + TrafficType + AQI_Cat + 
+                  IsOAD:TimeOfDay + IsOAD:TrafficType + 
+                  IsOAD:Holiday + 
+                  TimeOfDay:TrafficType + TimeOfDay:AQI_Cat + TrafficType:AQI_Cat, 
+                at = at,
+                nuisance = c("Station","Weekday", "Month", "Year", 
+                             "MeanT", "Precip","Sunlight_Hrs", "RelHum", "WindSpeed", "WMO")) 
+  
+  # Get out the pairwise contrasts that are important
+  pair_0 <- pairs(em, 
+                  by = c("TrafficType", "TimeOfDay","AQI_Cat","Holiday"),
+                  adjust = "bonferroni") |> 
+    summary(infer = c(TRUE, TRUE), level = 0.95) |> as.data.frame()
+  
+  # Estimate coefficents
+  sum <- summary.glm(model_quasi) |> coef()
+  
+  # Get all params in the model
+  all_params <- names(coef(model_quasi)) 
+  
+  # Get out the interaction terms 
+  pair_1 <- pair_0 |> 
+    mutate(TimeTraffic = interaction(TimeOfDay, TrafficType, Holiday,
+                                        sep = " - ")) |> 
+    dplyr::select(TrafficType, TimeOfDay, Holiday, estimate, 
+                  asymp.LCL, asymp.UCL, p.value, TimeTraffic) |> 
+    unique() |> 
+    arrange(TimeOfDay)
+  
+# Save results
+  filePath <- paste0("../results/02_timeOfDay/",region,"_contrasts.csv")
+  write.csv(pair_1, filePath, row.names = FALSE)
+  
+  filePath <- paste0("../results/02_timeOfDay/",region,"_model_summary.csv")
+  write.csv(sum, filePath)
+})
+```

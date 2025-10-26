@@ -1,0 +1,68 @@
+---
+title: "Table1"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(knitr)
+library(readxl)
+
+source('return_oad_area.R') 
+```
+
+# Table 1: County/Population Region Info
+
+```{r}
+#| label: table_1
+
+labels <- c('arr' = 'Austin-Round Rock',
+            'bpa'='Beaumont-Port Arthur',
+            'cc'='Corpus Christi',
+            'dfw'='Dallas-Fort Worth',
+            'elp'='El Paso',
+            'hgb'='Houston-Galveston-Brazoria',
+            'netx'='Tyler-Longview',
+            'san'='San Antonio',
+            'vic'='Victoria',
+            "None" = "None")
+
+# Nonattainment counties are from "data/epa_8h_nonattainment_zones.csv"
+# County locations are from "data/oad_regions_with_counties_and_stations.xlsx"
+
+# Read in data
+df <- read_excel("../data-raw/co-est2024-pop-48.xlsx", skip = 3) |> 
+  rename(County = ...1, Population = ...2) |> # taking 2020 year dont need other cols
+  dplyr::select(County, Population) |> 
+  filter(County != "Texas") |> 
+  drop_na() |> 
+  mutate(County = County |>
+           str_remove("^\\.") |>
+           str_remove(", Texas$"),
+         OAD = factor(return_oad_area(County)))
+  
+# Calculate all population
+all_pop <- sum(df |> pull(Population))
+
+# Get population by OAD, format appropriately
+pop_by_oad <- df |> 
+  group_by(OAD) |> 
+  summarise(TotalPop = sum(Population, na.rm = T),
+            PercOfPop = sprintf("%.2f", TotalPop/all_pop*100)) |> 
+  mutate(OAD = factor(OAD, levels = names(labels), labels = labels),
+         PopThousands = sprintf("%.2f", TotalPop/1000)) |> 
+  dplyr::select(OAD, PopThousands, PercOfPop) |> 
+  filter(OAD != 'None')
+
+# Output table
+kable(pop_by_oad, format = 'latex',
+      booktabs = TRUE,
+      escape = FALSE,
+      linesep = "") 
+
+kable(pop_by_oad, format = 'html', booktabs = 'TRUE')
+```

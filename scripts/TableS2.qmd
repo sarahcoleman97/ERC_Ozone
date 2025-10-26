@@ -1,0 +1,77 @@
+---
+title: "TableS2"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(knitr)
+```
+
+# SI Table 2: Ozone Action Days and AQI Data
+
+```{r}
+#| label: table_si_2
+
+# Define (all) AQI categories for correctly ordered factor levels
+aqi_cats <- c("Good","Moderate",
+              "Unhealthy for Sensitive Groups", "Unhealthy",
+              "Very Unhealthy","Hazardous")
+
+# Define regions
+regions <- c('arr', 'dfw', 'elp', 'hgb', 'san') 
+
+# Define months in season
+valid_ozone_month_list <- list('arr' = 4:10,
+                               'dfw' = 3:10,
+                               'elp' = 5:10,
+                               'hgb' = 3:11,
+                               'san' = 4:10) 
+
+# AQI df - read in 
+aqi <- readRDS("../data/aqi_df") |> 
+  filter(OAD %in% regions) |> 
+  mutate(AQI_Cat = factor(AQI_Cat, levels = aqi_cats, ordered = TRUE)) # for ordered table
+
+# OAD df - read in 
+oad <- readRDS("../data/dates_df") |> 
+  filter(OAD %in% regions) |> 
+  mutate(IsOAD = IsOAD |> as.character() |> as.numeric()) # need to be int for summing
+
+# Merging dfs 
+# (note this includes ALL data from 2008-2023, regardless if traffic data exist on that day)
+aqi_dates <- full_join(aqi, oad, by = c('OAD', 'Date')) |> 
+  drop_na(AQI_Cat) |> # not all days have AQI cat
+  ungroup() |> 
+  rowwise() |> 
+  mutate(InSeason = if_else(Month %in% valid_ozone_month_list[[OAD]],
+                            1, 0)) |> 
+  filter(InSeason == 1) |> # only take days in OAD forecasting season
+  select(-Holiday, -Year, -Date, -Weekday, -InSeason) 
+
+# Get the table
+table_days_oad <- aqi_dates |> 
+  group_by(OAD, AQI_Cat) |>
+  summarise(IsOAD = sum(IsOAD),
+            IsDay = n(), .groups = 'drop') |>
+  mutate(Percent = sprintf("%.1f", IsOAD/IsDay * 100),
+         Value = paste0(Percent, " (", IsOAD, "/", IsDay,")")) |> 
+  dplyr::select(OAD, AQI_Cat, Value) |>
+  complete(OAD, AQI_Cat, fill = list('Value' = 'NA (0/0)')) |> 
+  pivot_wider(names_from = OAD, 
+              names_sort = TRUE,
+              names_expand = TRUE,
+              values_from = Value) |> 
+  dplyr::select(AQI_Cat, all_of(regions)) 
+
+kable(table_days_oad, format = 'latex', 
+      booktabs = TRUE,
+      escape = FALSE,
+      linesep = "") 
+
+kable(table_days_oad, format = 'html', booktabs = 'TRUE')
+```

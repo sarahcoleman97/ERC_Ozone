@@ -1,0 +1,79 @@
+---
+title: "FigureS1"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(ggplot2)
+
+eval <- TRUE  
+save_figures <- FALSE
+```
+
+# Figure S1: OAD Region Forecasting Times
+
+```{r, eval = eval}
+#| label: fig_s1
+
+# Define valid ozone months for each region, and months and regions
+valid_ozone_month_list <- list('arr' = 4:10,
+                               'bpa' = 5:10,
+                               'cc' = 4:10,
+                               'dfw' = 3:10,
+                               'elp' = 5:10,
+                               'hgb' = 3:11,
+                               'netx' = 5:9,
+                               'san' = 4:10,
+                               'vic' = 4:10)
+regions <- names(valid_ozone_month_list)
+months <- 1:12
+
+# Make matrix for OAD months
+oad_df <- data.frame(OAD = rep(regions, each = length(months)), 
+                      Month = rep(months, by = length(regions))) |> 
+  rowwise() |> 
+  mutate(InSeason = Month %in% valid_ozone_month_list[[OAD]],
+         OAD = factor(OAD,
+                      levels = rev(regions),
+                      labels = rev(c('Austin-Round Rock',
+                                'Beaumont-Port Arthur',
+                                'Corpus Christi',
+                                'Dallas-Fort Worth',
+                                'El Paso',
+                                'Houston-Galveston-Brazoria',
+                                'Tyler-Longview',
+                                'San Antonio',
+                                'Victoria'))),
+         Month = as.factor(Month),
+         InSeason = factor(InSeason, levels = c("TRUE", "FALSE")))
+
+month_conversion <- c('1' = 'Jan', '2' = 'Feb', '3' = 'Mar', '4' = 'Apr',
+                              '5' = 'May', '6' = 'Jun', '7' = 'Jul', '8' = 'Aug',
+                              '9' = 'Sep', '10' = 'Oct', '11' = 'Nov', '12' = 'Dec')
+
+p <- oad_df |> 
+  ggplot(aes(y = OAD, x = Month, fill = InSeason)) +
+  geom_tile(color = 'black') + 
+  theme_minimal() + 
+  scale_x_discrete(labels = month_conversion) + 
+  scale_fill_manual(name = 'In forecast season',
+    labels = c("TRUE" = "Yes", "FALSE" = "No"),
+    values = c("TRUE" = "#87bfff", "FALSE" = "white")) + 
+  labs(y = NULL) 
+
+if (save_figures){
+  prefix <- "../images/"
+  ggsave(paste0(prefix,'fig_s1.pdf'),
+         plot = p,
+         width = 20,
+         height = 10,
+         units = 'cm')
+}
+
+print(p)
+```

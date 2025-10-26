@@ -1,0 +1,63 @@
+---
+title: "TableS4"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(knitr)
+```
+
+# SI Table 4: unique station-days AND % of station-days that are OADs
+
+```{r}
+#| label: table_si_4
+
+regions <- c('arr', 'dfw', 'elp', 'hgb', 'san')
+files <- paste0("../data/dfs_timeOfDay/",regions)
+df_list <- vector(mode = 'list', length = length(regions))
+names(files) <- regions
+names(df_list) <- regions
+
+# Read data
+all_df <- lapply(regions, function(region){
+  rds <- readRDS(files[[region]]) |> 
+    mutate(OAD = region)
+}) |> bind_rows() |> 
+  drop_na(Year)
+
+# Get count of observations, by region and year
+num_sta_days <- all_df |> 
+  group_by(OAD, Year) |> 
+  summarise(CountTotal = n(), .groups = 'drop')
+
+# Get count of observations that are OADs, by region and year
+num_sta_days_oads <- all_df |> 
+  filter(IsOAD == 1) |> # only OADs
+  group_by(OAD, Year) |> 
+  summarise(CountOAD = n(), .groups = 'drop')
+
+# Merge dfs and format appropriately, change missing values to 0
+final_df <- full_join(num_sta_days, num_sta_days_oads, by = c('OAD','Year')) |> 
+  replace_na(list('CountOAD' = 0)) |> 
+  mutate(Percent = sprintf("%.1f", CountOAD/CountTotal * 100),
+         Value = paste0(Percent, " (", CountOAD, "/", CountTotal,")")) |> 
+  dplyr::select(OAD, Year, Value) |> 
+  pivot_wider(names_from = OAD, 
+              values_from = Value, 
+              names_vary = 'slowest') |>
+  mutate() |> 
+  arrange(desc(Year)) 
+
+options(knitr.kable.NA = '') # make NA appear blank
+kable(final_df, format = 'latex', 
+      booktabs = TRUE,
+      escape = FALSE,
+      linesep = "")
+
+kable(final_df, format = 'html', booktabs = 'TRUE')
+```

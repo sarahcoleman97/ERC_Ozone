@@ -1,0 +1,553 @@
+---
+title: "01_Make_Dataframes"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: initalize
+#| include: false
+
+library(timeDate)
+library(lubridate)
+library(purrr)
+library(dplyr)
+library(openxlsx)
+library(tidyr)
+library(readxl)
+library(stringr)
+library(knitr)
+
+eval <- FALSE # Set this to FALSE to run nothing
+```
+
+# Overview
+
+This script makes all the data frames used in the analysis. Conceptually, it processes and formats everything from data-raw/ into data/. All preprocessing is done here. Each code block does one of the following:
+
+1.  Assembles the OAD forecasting region and location of each traffic and air quality station.
+
+2.  Formats the raw BP\|CX traffic data into individual RDS.
+
+3.  Preprocess the AQI data for each region.
+
+4.  Preprocess the Holiday data for each region.
+
+5.  Processes the OpenMeteo Weather data (both time of day and daily).
+
+6.  Make final dataframes for the TimeOf Day and Daily analyses. These are the inputs to analyses.
+
+7.  Preprocess the Ozone data for each region. This is only used in Figure S2.
+
+# 1. Station locations
+
+## 1a. Traffic
+
+```{r, eval = eval}
+
+prefix <- '../data-raw/bpcx/'
+
+# Read raw metadata, get station location
+meta_files <- dir(prefix, pattern = '*station-meta.csv')
+location_df <- lapply(meta_files, function(meta_file){
+  file <- paste0(prefix, meta_file)
+  df <- read.csv(file, header = T) |> 
+    dplyr::select(station_id_tmg, serial_number, 
+         count_type, count_method, surface_type, 
+         longitude, latitude) |> 
+  filter(count_method == 'Permanent station') |> 
+  unique() 
+}) |> bind_rows()
+oad_levels <- c("arr","bpa","cc", "dfw","elp","hgb","netx","san","vic","None")
+
+# Get station/oad/county placing
+fileName <- "../data/oad_regions_with_counties_and_stations.xlsx" # i made this manually
+oad_areas <- read_xlsx(fileName,
+                       sheet = "permanent stations") |> 
+  pivot_longer(cols = starts_with('Station'),
+               names_to = NULL, 
+               values_to = 'station_id_tmg') |> 
+  rename(OAD = `OAD Region`) |> 
+  drop_na() |> 
+  dplyr::select(station_id_tmg, OAD, County)
+
+# Make dataframe
+location_df_with_oad <- location_df |> 
+  left_join(oad_areas, by = 'station_id_tmg', 
+            relationship = 'many-to-many') |> 
+  mutate(OAD = factor(OAD, 
+                      levels = oad_levels))
+
+# Save this for use in later analysis
+fileName <- '../data/traffic_station_locations_with_OAD.csv'
+write.csv(location_df_with_oad, fileName, row.names = F) 
+```
+
+## 1b. Air quality
+
+```{r, eval = eval}
+
+# Read in files
+filePath <- '../data-raw/ozone/'
+files <- list.files(filePath, pattern = '*.csv')
+source('return_oad_area.R')
+
+stations_df <- lapply(files, function(file){
+  df <- read.csv(paste0(filePath, file)) |> 
+    mutate(County = paste(County, 'County'),
+           OAD = return_oad_area(County)) |> 
+    filter(OAD != "None") |> 
+    dplyr::select(OAD, Site.ID, Site.Latitude, Site.Longitude) 
+}) |> 
+  bind_rows() |> 
+  unique()
+
+# Save this for use in later analysis
+path <- '../data/ozone_station_locations_with_OAD.csv'
+write.csv(stations_df, path, row.names = F)
+```
+
+# 2. Format/Preprocess Traffic Data
+
+```{r, eval = eval}
+#| label: process
+
+regions <- c('arr','dfw','hgb','elp','san')
+# Below list is from https://www.tceq.texas.gov/airquality/monops/ozonefacts.html
+valid_ozone_month_list <- list('arr' = 4:10,
+                               'dfw' = 3:10,
+                               'hgb' = 3:11,
+                               'elp' = 5:10,
+                               'san' = 4:10) 
+
+# Define time range for which I am collecting traffic data
+all_times <- seq(from = 7, to = 17.75, by = 0.25) # entire range, 7am to 6pm
+orders <- c("Ymd HMS", "mdy HM") # for parsing dates later
+
+for(region in regions){
+  
+  # Timezone stuff
+  if (region == 'elp'){
+    tz = 'America/Denver'
+  } else {
+    tz = 'America/Chicago'
+  }
+
+  
+  ##############################
+  ### Formulating Traffic DF ###
+  ##############################
+  
+  # Get traffic stations in this region
+  traffic_stations <- 
+    read.csv("../data/traffic_station_locations_with_OAD.csv") |> 
+    filter(OAD == region) |> 
+    dplyr::select(station_id_tmg) |> 
+    unlist() |> unname() |> unique()
+  
+  # Get filenames of these stations
+  region_files <- list.files("../data-raw/bpcx/",
+                          pattern = "*-station-counts.csv") |> 
+    as.data.frame() |> 
+    rename_with(~c('file')) |> 
+    mutate(Station = substr(file, 12, 17)) |> 
+    filter(Station %in% traffic_stations) |> 
+    dplyr::select(file) |> unlist() |> unname()
+  
+  # Make vectors to store noteworthy results
+  datetimes_with_max_count <- vector(mode = 'list', length = length(region_files))
+  datetimes_which_dont_parse <- vector(mode = 'list', length = length(region_files))
+
+  for (idx in 1:length(region_files)){
+    
+    ## Read in traffic for this station
+    file <- region_files[idx]
+    Station <- substr(file, 12, 17)
+    df_0 <- read.csv(paste0('../data-raw/bpcx/',file)) |> 
+      dplyr::select(where(~ !all(is.na(.)))) |>  # drop cols where ALL values NA
+      rename_with(~ ifelse(str_detect(.x, "\\.suspect$"),.x,
+                           paste0(.x, ".value")), -date) |> # renaming to help pivot work
+      pivot_longer(cols = -date,
+                   names_to = c("station", ".value"),
+                   names_pattern = "^(.*)\\.(suspect|value)$") |> 
+      drop_na(value) |> # drop any values (counts) that are NA
+      filter(suspect %in% c("ABV","IO2","IO3","IO4","IO5","IO6","VAL")) 
+    # filtering only valid counts
+    
+    # Record any datetimes that have a max count
+    datetimes_with_max_count[[idx]] <- df_0 |> 
+      filter(suspect == 'IO4') |> 
+      pull(date) |> 
+      unique()
+    
+    ## Format timezones to handle daylight savings times and rename columns for clarity
+    df_1 <- df_0 |>
+      mutate(ymd_hms = 
+               suppressWarnings(parse_date_time(date, orders, tz = tz)),
+             h.m = hour(ymd_hms) + minute(ymd_hms)/60,
+             Date = as.Date(ymd_hms),
+             Month = month(Date)) |> 
+      dplyr::select(Date, Month, h.m, station, value, suspect) |> 
+      rename(TrafficCounter = station,
+             TrafficTime = h.m,
+             TrafficCount = value,
+             TrafficSuspect = suspect)
+    
+    # Record any datetimes that don't parse when converting
+    datetimes_which_dont_parse[[idx]] <- df_0 |> 
+      mutate(ymd_hms = 
+               suppressWarnings(parse_date_time(date, orders, tz = tz))) |> 
+      filter(is.na(ymd_hms))
+    
+    # Filter data for this analysis (during daytime, bike/ped traffic, during OAD season)
+    df_2 <- df_1 |> 
+      filter(TrafficTime %in% all_times) |> 
+      mutate(TrafficType = case_when(grepl('.Ped', TrafficCounter) ~ 'Ped',
+                                     grepl('.Bic', TrafficCounter) ~ 'Bic',
+                                     TRUE ~ 'Other'),
+             TrafficType = TrafficType |> as.factor(),
+             Station = Station,
+             InSeason = ifelse(Month %in% valid_ozone_month_list[[region]], 1, 0)) |> 
+      filter(TrafficType != 'Other',
+             InSeason == 1) |> # remove observations not in season
+      dplyr::select(-c('InSeason','Month'))
+    
+    # Save .rds 
+    saveRDS(df_2, file = paste0('../data/bpcx/',region,'/',Station))
+  }
+  
+  ###################################################
+  ### Write region specific troubleshooting files ###
+  ###################################################
+  
+  filePath <- '../data/bpcx/metadata/'
+  Station_Names <- traffic_stations
+  
+  names(datetimes_with_max_count) <- Station_Names
+  names(datetimes_which_dont_parse) <- Station_Names
+  
+  write.xlsx(datetimes_with_max_count,
+             file = paste0(filePath,region,"_datetimes_with_max_count.xlsx"))
+  write.xlsx(datetimes_which_dont_parse,
+             file = paste0(filePath,region,"_datetimes_which_dont_parse.xlsx"))
+}
+```
+
+# 3. Format/Preprocess AQI
+
+```{r, eval = eval}
+
+source('return_oad_area.R')
+filePath <- '../data-raw/aqi/'
+allFiles <- list.files(path = filePath, pattern = '*.csv')
+
+# Define ordered AQI levels so I get the max AQI measured for a region (multiple counties)
+ordered_aqi_levels <- c("Good","Moderate","Unhealthy for Sensitive Groups",
+                       "Unhealthy","Very Unhealthy","Hazardous")
+
+# Read df
+aqi_df <- lapply(paste0(filePath,allFiles), function(file){
+  df <- read.csv(file) |> 
+    filter(State.Name == 'Texas') |> 
+    mutate(County = paste(county.Name, "County"),
+           OAD = return_oad_area(County),
+           Date = as.Date(Date),
+           Category = factor(Category, levels = ordered_aqi_levels, ordered = TRUE)) |> 
+    filter(OAD != 'None') |> 
+    group_by(Date, OAD) |> 
+    summarise(Category = max(Category, na.rm = TRUE), 
+              .groups = 'drop') |> # get max AQI per OAD region
+    rename(AQI_Cat = Category) |> 
+    mutate(AQI_Cat = factor(AQI_Cat, 
+                            ordered = FALSE, 
+                            levels = ordered_aqi_levels)) 
+  # remove ordering for downstream analysis
+}) |> 
+  bind_rows()
+
+# Save RDS
+saveRDS(aqi_df, '../data/aqi_df')
+```
+
+# 4. Format/Preprocess OADs and Holidays
+
+```{r, eval = eval}
+
+regions <- c('arr','bpa','cc','dfw','hgb','netx','elp','san','vic')
+filePath <- '../data-raw/oad/'
+
+# Get out ozone action days (from scrape)
+oad_df <- lapply(regions, function(region){
+  df <- read.csv(paste0(filePath,region,'_Action_Days.csv'), row.names = 1) |> 
+    as.data.frame() |> 
+    rename_with(~c("Date")) |> 
+    mutate(Date = as.Date(Date),
+           IsOAD = 1,
+           OAD = region)
+}) |> bind_rows()
+
+# Get out holidays
+beg_date <- as.Date('2008-01-01')
+end_date <- as.Date('2023-12-31')
+Date <- seq(from = beg_date, to = end_date, by = "day")
+
+# Define year range
+year_range <- year(Date) %>% unique()
+
+# Holidays in package timeDate (think big and/or weekdays that are off)
+hlist <- timeDate::listHolidays("US")
+hlist <- hlist[hlist != c("USCPulaskisBirthday")] # this is chicago specific
+holidays <- timeDate::holiday(year_range,hlist) |> 
+  as.Date() |> sort()
+
+# Making df
+date_df <- data.frame(Date) |> 
+  mutate(Holiday = ifelse(Date %in% holidays, 1, 0) |> as.factor(),
+         Month = month(Date) |> as.factor(),
+         Year = year(Date) |> as.factor(),
+         Weekday = factor(weekdays(Date))) |> 
+  tidyr::crossing(OAD = regions)
+
+# Merge the two dfs
+dates_df <- date_df |> 
+  left_join(oad_df, by = c('Date','OAD')) |> 
+  mutate(IsOAD = replace_na(IsOAD, 0) |> as.factor()) |> 
+  arrange(Date) 
+
+# Save RDS
+saveRDS(dates_df, '../data/dates_df')
+```
+
+# 5. Format/Preprocess Weather
+
+```{r, eval = eval}
+
+regions <- c('arr','dfw','hgb','elp','san') # only scraped traffic regions
+
+for (region in regions){
+  
+  # Read correctly (elp in different tz!)
+  if (region == 'elp'){
+    tz <- 'America/Denver'
+  } else {
+    tz <- 'America/Chicago'
+  }
+  
+  # Define range to process data
+  hour_range <- 7:17
+  morning <- 7:10
+  midday <- 11:13
+  afternoon <- 14:17
+  
+  # Read df, format correctly
+  df <- read.csv(paste0('../data-raw/weather/formatted_correctly/',
+                        region,'.csv')) |> 
+    mutate(DateTime = lubridate::as_datetime(time, format = "%Y-%m-%dT%H:%M", tz = tz),
+           Hour = lubridate::hour(DateTime),
+           Date = as.Date(DateTime),
+           Sunshine_Hrs = sunshine_duration..s./(60*60)) |> # formatting correctly
+    rename(WMO = weather_code..wmo.code.,
+           MeanT = temperature_2m...C.,
+           WindSpeed = wind_speed_10m..km.h.,
+           Precip = precipitation..mm.,
+           RelativeH = relative_humidity_2m....) |> # renaming for ease
+    filter(Hour %in% hour_range) |> 
+    dplyr::select(-location_id, -time, -sunshine_duration..s., -DateTime) |>  
+    mutate(TimeOfDay = case_when(Hour %in% morning ~ 'Morning',
+                                 Hour %in% midday ~ 'Midday',
+                                 Hour %in% afternoon ~ 'Afternoon'),
+           TimeOfDay = factor(TimeOfDay, levels = c('Morning', 'Midday','Afternoon'))) |> 
+    group_by(Date, TimeOfDay) |> # getting max values per region/TOD
+    summarise(MeanT = max(MeanT, na.rm = T),
+              Precip = max(Precip, na.rm = T),
+              RelativeH = max(RelativeH, na.rm = T),
+              WMO = max(WMO, na.rm = T),
+              WindSpeed = max(WindSpeed, na.rm = T),
+              Sunshine_Hrs = max(Sunshine_Hrs, na.rm = T), .groups = 'drop') |> 
+    mutate(OAD = region)
+  
+  saveRDS(df, paste0('../data/weather/', region))
+}
+```
+
+# 6. Make final dataframes for analysis
+
+## 6a. Time of day
+
+```{r, eval = eval}
+
+# Define regions and times
+regions <- c('arr','dfw','hgb','elp','san') # only scraped traffic regions
+morning <- seq(from = 7, to = 10.75, by = 0.25) 
+midday <- seq(from = 11, to = 13.75, by = 0.25) 
+afternoon <- seq(from = 14, to = 17.75, by = 0.25) 
+
+# Read smaller dfs (which cover multi-regions)
+aqi_df <- readRDS('../data/aqi_df')
+dates_df <- readRDS('../data/dates_df')
+
+# Combine them
+aqi_dates <- full_join(aqi_df, dates_df, by = c('OAD', 'Date')) |> 
+  drop_na(AQI_Cat) |>  # not all days have AQI obs
+  filter(OAD %in% regions) # only doing some regions
+
+for (region in regions){
+  
+  # Filter AQI-dates df for that region
+  aqi_dates_reg <- aqi_dates |> 
+    filter(OAD == region) |> 
+    dplyr::select(-OAD)
+  
+  # Get weather df for that region
+  weather_df <- readRDS(paste0('../data/weather/', region)) |> 
+    mutate(WMO = as.factor(WMO)) # keeping here for consistency with daily
+  
+  # Read traffic data and mutate
+  traffic_stations <- list.files(path = paste0('../data/bpcx/',region))
+  traffic_df <- lapply(traffic_stations, function(station){
+    df <- readRDS(paste0('../data/bpcx/',region,'/',station)) |> 
+      mutate(TimeOfDay = case_when(TrafficTime %in% morning ~ 'Morning',
+                                   TrafficTime %in% midday ~ 'Midday',
+                                   TrafficTime %in% afternoon ~ 'Afternoon') |>
+               as.factor(),
+             Hours = case_when(TimeOfDay == 'Morning' ~ 4,
+                               TimeOfDay == 'Midday' ~ 3,
+                               TimeOfDay == 'Afternoon' ~ 4)) |> 
+      group_by(Date, TimeOfDay, TrafficType, Hours) |> 
+      mutate(n_obs = n(), # total number of observations 
+             n_dir = n_distinct(TrafficCounter), # sometimes traffic is directional
+             n_unique = n_distinct(TrafficTime), # total number of traffic times
+             keep = n_obs == Hours * 4 * n_dir, # check 1 - all obs complete
+             keep2 = n_obs == n_unique * n_dir) |>  # check 2 - no duplications
+              filter(keep, keep2) |> 
+          summarise(TrafficCount = sum(TrafficCount), .groups = 'drop') |> # get the actual traffic count
+      mutate(Station = as.factor(station)) 
+  }) |> bind_rows() 
+  
+  # Removing stations where there are non-integer counts!
+  problem_stations <- traffic_df |> 
+    filter(TrafficCount %%1 !=0) |> 
+    pull(Station) |> 
+    unique()
+  
+  traffic_df <- traffic_df |> 
+    filter(!Station %in% problem_stations)
+  
+  # Record stations with non-integer counts
+  if (length(problem_stations) > 0){
+    write.csv(problem_stations, 
+              paste0('../data/stations_excluded_region_',region,'.csv'),
+              row.names = F)
+  }
+  
+  # Making final df
+  df_final <- traffic_df |> 
+    left_join(aqi_dates_reg, by = c('Date')) |> 
+    left_join(weather_df, by = c('Date','TimeOfDay')) |> 
+    mutate(across(where(is.factor), droplevels))
+  
+  # Save RDS
+  saveRDS(df_final, paste0('../data/dfs_timeOfDay/', region))
+  
+  # Save CSV
+  write.csv(df_final, paste0('../data/dfs_timeOfDay/timeOfDay_', region, '.csv'), 
+            row.names = F)
+}
+```
+
+## 6b. Daily
+
+```{r, eval = eval}
+
+# Define regions and times
+regions <- c('arr','dfw','hgb','elp','san') # only scraped traffic regions
+all_times <- seq(from = 7, to = 17.75, by = 0.25) # entire range
+
+# Read smaller dfs (which cover multi-regions)
+aqi_df <- readRDS('../data/aqi_df') 
+dates_df <- readRDS('../data/dates_df')
+
+# Combine them
+aqi_dates <- full_join(aqi_df, dates_df, by = c('OAD', 'Date')) |> 
+  drop_na(AQI_Cat) |>  # not all days have AQI obs
+  filter(OAD %in% regions) # only doing some regions
+
+for (region in regions){
+  # Filter AQI-dates df for that region
+  aqi_dates_reg <- aqi_dates |> 
+    filter(OAD == region) |> 
+    dplyr::select(-OAD)
+  
+  # Get weather df for that region and summarize by daily
+  weather_df <- readRDS(paste0('../data/weather/', region)) |> 
+    group_by(Date) |> 
+    summarise(MeanT = max(MeanT, na.rm = T),
+              Precip = max(Precip, na.rm = T),
+              RelativeH = max(RelativeH, na.rm = T),
+              WMO = max(WMO, na.rm = T),
+              WindSpeed = max(WindSpeed, na.rm = T),
+              Sunshine_Hrs = max(Sunshine_Hrs, na.rm = T)) |> 
+    ungroup() |> 
+    mutate(WMO = as.factor(WMO)) # must do after max()
+  
+  # Read traffic data and mutate
+  traffic_stations <- list.files(path = paste0('../data/bpcx/',region))
+  traffic_df <- lapply(traffic_stations, function(station){
+    df <- readRDS(paste0('../data/bpcx/',region,'/',station)) |> 
+      group_by(Date, TrafficType) |> 
+      mutate(n_obs = n(), # total number of observations 
+             n_dir = n_distinct(TrafficCounter), # sometimes traffic is directional
+             n_unique = n_distinct(TrafficTime), # total number of traffic times
+             keep = n_obs == length(all_times) * n_dir, # check 1 - all obs complete
+             keep2 = n_obs == n_unique * n_dir) %>% # check 2 - no duplications
+      filter(keep, keep2) |>  
+      summarise(TrafficCount = sum(TrafficCount), .groups = 'drop') |> 
+      mutate(Station = station) 
+  }) |> bind_rows() 
+  
+  # Removing stations where there are non-integer counts!
+  problem_stations <- traffic_df |> 
+    filter(TrafficCount %%1 !=0) |> 
+    pull(Station) |> 
+    unique()
+  
+  traffic_df <- traffic_df |> 
+    filter(!Station %in% problem_stations)
+  
+  # Making final df
+  df_final <- traffic_df |> 
+    left_join(aqi_dates_reg, by = c('Date')) |> 
+    left_join(weather_df, by = c('Date')) |> 
+    mutate(across(where(is.factor), droplevels))
+  
+  # Save RDS
+  saveRDS(df_final, paste0('../data/dfs_Daily/', region))
+  
+  # Save CSV
+  write.csv(df_final, paste0('../data/dfs_Daily/Daily_', region, '.csv'), 
+            row.names = F)
+}
+```
+
+# 7. Format/Preprocess Ozone
+
+```{r, eval = eval}
+
+source('return_oad_area.R')
+
+ozoneFilePath <- "../data-raw/ozone/"
+allFiles <- list.files(ozoneFilePath, pattern = '^20[0-2][0-9].csv')
+
+# Mutate ozone data to be OAD region specific
+ozone_df <- lapply(paste0(ozoneFilePath,allFiles), read.csv) |> 
+  bind_rows() |> 
+  filter(Percent.Complete == 100) |> 
+  mutate(County = paste(County, "County"),
+         OAD = factor(return_oad_area(County)),
+         Date = as.Date(Date, format = "%m/%d/%Y")) |> 
+  filter(OAD != 'None') |> 
+  group_by(Date, OAD) |> 
+  summarise(Ozone = max(Daily.Max.8.hour.Ozone.Concentration, na.rm = TRUE))
+
+saveRDS(ozone_df, '../data/ozone_df')
+```

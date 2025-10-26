@@ -1,0 +1,13 @@
+.gitattributes
+.Rprofile
+.Rproj.user
+.Rhistory
+.RDataTmp
+.RData
+.Ruserdata
+.DS_Store
+Ozone.Rproj
+**/archive/
+data/
+data-raw/
+pdfs/

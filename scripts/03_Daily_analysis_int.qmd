@@ -1,0 +1,77 @@
+---
+title: "03_Daily_analysis_int"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: initalize
+#| include: false
+
+library(tidyr)
+
+eval <- FALSE # Set this to FALSE to run nothing
+```
+
+# Analysis function
+
+```{r, eval = eval}
+#| label: analysis
+
+regions <- c('arr', 'dfw', 'elp', 'hgb', 'san')
+
+analysis <- lapply(regions, function(region){
+
+  # Read data
+  df <- readRDS(paste0('../data/dfs_Daily/',region)) 
+  
+  # Model equation
+  eqn_quasi <- TrafficCount ~ TrafficType + Station + # traffic info
+    IsOAD + AQI_Cat + # aqi
+    Weekday + Holiday +  Month + Year + # datetime
+    MeanT + Precip + Sunshine_Hrs + RelativeH + WindSpeed + WMO + # weather
+    IsOAD:TrafficType + IsOAD:AQI_Cat + IsOAD:Holiday + 
+    TrafficType:AQI_Cat 
+  
+  # Fit model
+  model_quasi <- glm(eqn_quasi, family = quasipoisson, data = df) 
+  
+  # Get param estiamtes
+  sum <- summary.glm(model_quasi) |> coef()
+  
+  # Get all params in the model
+  all_params <- names(coef(model_quasi)) 
+  
+  # Define parameters of interest (may not be present for all regions)
+  param_list <- c("IsOAD1", 
+                "IsOAD1:AQI_CatModerate", 
+                "IsOAD1:AQI_CatUnhealthy for Sensitive Groups",
+                "IsOAD1:AQI_CatUnhealthy", 
+                "IsOAD1:AQI_CatVery Unhealthy",
+                "Holiday",
+                "IsOAD1:Holiday1",
+                "TrafficTypePed:IsOAD1",
+                "TrafficTypePed", 
+                "AQI_CatModerate", 
+                "AQI_CatUnhealthy for Sensitive Groups",
+                "AQI_CatUnhealthy", 
+                "AQI_CatVery Unhealthy",
+                "TrafficTypePed:AQI_CatModerate", 
+                "TrafficTypePed:AQI_CatUnhealthy for Sensitive Groups",
+                "TrafficTypePed:AQI_CatUnhealthy",
+                "TrafficTypePed:AQI_CatVery Unhealthy")
+    
+    # Figure out which are present in this model
+    select_params <- param_list[param_list %in% all_params] 
+    
+    # Get confidience interval
+    conf <- confint(model_quasi, parm = select_params)
+  
+    # Save results
+    filePath <- paste0("../results/03_Daily/",region,"_param_ci.csv")
+    write.csv(conf, filePath)
+    
+    filePath <- paste0("../results/03_Daily/",region,"_model_summary.csv")
+    write.csv(sum, filePath)
+})
+```

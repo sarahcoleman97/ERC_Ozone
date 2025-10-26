@@ -1,0 +1,185 @@
+---
+title: "Figure1"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(ggplot2)
+library(ggpattern)
+library(ggrepel)
+library(osmdata)
+library(tigris)
+library(tidyverse)
+library(RColorBrewer)
+library(sf)
+
+options(tigris_use_cache = TRUE)
+source('return_oad_area.R') 
+
+# Change to run
+eval <- TRUE
+save_figures <- FALSE
+```
+
+# Figure 1: OAD Regions & Sensor Locations
+
+```{r eval=eval}
+#| label: fig_1
+#| fig-height: 3.9
+#| fig-width: 5.9
+
+# Aesthetic things
+col1 <- c(brewer.pal(10,"BrBG")[-5])
+light_regions <- c('dfw', 'elp', 'hgb')
+dark_regions <- c('arr','bpa', 'cc','netx','san', 'vic')
+point_size <- 1
+
+# Get counties
+counties <- tigris::counties(state = 48, 
+                             cb = TRUE, 
+                             class = "sf", 
+                             year = 2020,
+                             keep_zipped_shapefile = TRUE,
+                             refresh = FALSE) |> 
+  mutate(OAD = factor(return_oad_area(NAMELSAD), 
+                      levels = c("arr","bpa","cc",
+                                 "dfw","elp","hgb",
+                                 "netx","san","vic","None")),
+         OAD_plot = if_else(OAD == 'None', NA, OAD))
+
+# Adding in Traffic data
+fileName <- '../data/traffic_station_locations_with_OAD.csv'
+traffic_locations <- read.csv(fileName) |> 
+  rename(Station = station_id_tmg,
+         TrafficType = count_type) |> 
+  st_as_sf(coords = c("longitude","latitude"), crs = 4326)  |> 
+  mutate(PointColor = case_when(OAD %in% light_regions ~ 'black',
+                               OAD %in% dark_regions ~ 'white'))
+
+# Define relevant regions (ones with traffic data)
+relevant_regions <- c('arr','dfw', 'elp', 'hgb','san')
+fill <- c(relevant_regions, "None")
+stripe <- c("bpa", "cc", "netx", "vic")
+
+# Filled counties
+f <- counties |> 
+  filter(OAD %in% fill)
+
+# Striped counties
+s <- counties |> 
+  filter(OAD %in% stripe) |> 
+  mutate(NoData = factor("NoData", levels = c("NoData", "Available")))
+
+# Plot labels
+labels <- c('arr' = 'Austin-Round Rock',
+            'bpa'='Beaumont-Port Arthur (ND)',
+            'cc'='Corpus Christi (ND)',
+            'dfw'='Dallas-Fort Worth',
+            'elp'='El Paso',
+            'hgb'='Houston-Galveston-Brazoria',
+            'netx'='Tyler-Longview (ND)',
+            'san'='San Antonio',
+            'vic'='Victoria (ND)')
+
+# Create dummy data for the legend
+# 1) polygon within bbox
+unit_square <- st_polygon(list(
+  matrix(c(-96,28,  -96,28,  -95,29,  -95,29,  -96,28),
+         ncol = 2, byrow = TRUE)
+))
+
+# 2) make a list of nine identical squares
+squares <- st_sfc(rep(list(unit_square), 9), crs = st_crs(s))
+
+# 3) build the legend sf
+legend_sf <- st_as_sf(
+  data.frame(OAD = factor(c("arr","bpa","cc","dfw","elp","hgb","netx","san","vic"))),
+  geometry = squares)
+
+# # Get city centriods 
+# bbox <- st_bbox(counties)
+# place <- opq(bbox = bbox) |>
+#   add_osm_feature(key = "place",
+#                   value = c("city")) |>
+#   osmdata_sf()
+# saveRDS(place, "../data-raw/osm/all_tx_city.rds")
+
+place <- readRDS("../data-raw/osm/all_tx_city.rds")
+city_centroids <- place$osm_points |> 
+  group_by(name) |> 
+  reframe(Center = st_centroid(geometry)) |> 
+  filter(name %in% c("Austin", "Beaumont", "Corpus Christi", "Dallas", "El Paso",
+                     "Houston", "Tyler", "San Antonio", "Victoria")) |> 
+  st_as_sf(crs = 4326)
+  
+# Plotting
+p <- ggplot() + 
+   geom_sf_pattern(data = s, # this shows the counties with no data
+                  aes(fill = OAD, pattern_fill = 'white'),
+                  pattern = 'stripe',
+                  pattern_density = 0.5,
+                  pattern_spacing = 0.01,
+                  pattern_angle = 45,
+                  pattern_colour = NA, 
+                  color = 'grey40',
+                  linewidth = 0.25) +
+  geom_sf(data = f, # this shows the counties with data
+          aes(fill = OAD_plot), 
+          color = "grey40",
+          linewidth = 0.25) +
+  geom_sf(data = traffic_locations, # traffic locations
+          aes(shape = 'Traffic', fill = OAD),
+          color = traffic_locations$PointColor,
+          size = point_size,
+          alpha = 1/2,
+          show.legend = c(shape = FALSE, fill = FALSE)) +  
+  geom_sf(data = legend_sf, # dummy for legend
+          aes(fill = OAD),
+          color = 'NA',
+          linewidth = 0.25, # change this to make legend thickness increase
+          alpha = 0,           # invisible on the map
+          show.legend = c(shape = FALSE, fill = TRUE)) +
+  geom_sf(data = city_centroids,
+          size = point_size,
+          color = 'black') + 
+  geom_label_repel(data = city_centroids, 
+                  aes(label = name, geometry = Center),
+                  stat = "sf_coordinates",
+                  max.overlaps = 50000,
+                  alpha = 0.75,
+                  size = 8 /.pt) + 
+  scale_fill_manual(name='Forecasting region', # add in color scale
+                    values=col1,
+                    labels=labels,
+                    na.value = "white",
+                    breaks = c("arr","bpa","cc",
+                                 "dfw","elp","hgb",
+                                 "netx","san","vic")) +
+  scale_shape_manual(name = "Sensor type", # add in shape scalle
+                     values = c("Air quality" = 21,
+                                "Traffic" = 24)) +
+  scale_pattern_fill_identity() + # helps with stripe fill
+  guides(fill = guide_legend(override.aes = # more manual things
+                               list(pattern_fill = "white",
+                                    color = 'grey40',
+                                    size = 1.5))) + 
+  theme_void() + 
+  theme(legend.position = "right",    
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8))
+
+if (save_figures){
+  prefix <- "../figures/"
+  ggsave(paste0(prefix,'fig1.pdf'),
+         plot = p,
+         width = 15,
+         height = 10,
+         units = 'cm')
+}
+
+print(p)
+```

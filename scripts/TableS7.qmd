@@ -1,0 +1,153 @@
+---
+title: "TableS7"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(knitr)
+```
+
+# SI Table 7: Results of day analysis (no int)
+
+```{r, eval = FALSE}
+#| label: table_si_7
+
+# Get out estimates
+regions <- c("arr", "dfw", "elp", "hgb", "san")
+
+# Define parameters of interest (and in order for table)
+param_list <- c("IsOAD1", 
+                "AQI_CatModerate", 
+                "AQI_CatUnhealthy for Sensitive Groups",
+                "AQI_CatUnhealthy", 
+                "AQI_CatVery Unhealthy",
+                "TrafficTypePed", 
+                "TrafficTypePed:IsOAD1",
+                "TrafficTypePed:AQI_CatModerate", 
+                "TrafficTypePed:AQI_CatUnhealthy for Sensitive Groups",
+                "TrafficTypePed:AQI_CatUnhealthy",
+                "TrafficTypePed:AQI_CatVery Unhealthy",
+                "IsOAD1:Holiday1")
+
+# orders (for adding rows for latex formatting)
+orders <- c(0.9, 1.6, 1.7, 5.6, 5.7, 6.6, 6.7, 7.6, 7.7, 9.6, 11.6, 11.7)
+
+# table names (for adding rows for latex formatting)
+names_for_table <- c('\\multicolumn{2}{l}{\\textit{OAD (ref = Is not)}}', # 1
+                     'IsOAD', # 2
+                     NA, # 3
+                     NA, # 4
+                     '\\textit{AQI (ref = Good)}', # 5
+                     'Moderate', # 6
+                     NA, # 7
+                     'Unhealthy for', # 8
+                     "\\hspace{0.5em}Sensitive groups", # 9
+                     'Unhealthy', # 10
+                     NA, # 11
+                     'Very Unhealthy', # 12
+                     NA, # 13
+                     NA, # 14
+                     '\\multicolumn{2}{l}{\\textit{Traffic type (ref = Bicycle)}}', # 15
+                     'Pedestrian', #16
+                     NA, # 17
+                     NA, # 18
+                     '\\multicolumn{2}{l}{\\textit{OAD: Traffic type (ref = Is not: Bicycle)}}', # 19
+                     'IsOAD: Pedestrian', # 20
+                     NA, # 21
+                     NA, # 22
+                     '\\multicolumn{2}{l}{\\textit{Traffic type: AQI (ref = Bicycle: Good)}}', # 23
+                     'Pedestrian:', # 24
+                     '\\hspace{0.5em}Moderate', # 25
+                     'Pedestrian:', # 26
+                     '\\hspace{0.5em}Unhealthy for', # 27
+                     '\\hspace{0.5em}Sensitive Groups', # 28
+                     'Pedestrian:', # 29
+                     '\\hspace{0.5em}Unhealthy', # 30
+                     'Pedestrian: Very', # 31
+                     '\\hspace{0.5em}Unhealthy', # 32
+                     NA, # 33
+                     '\\multicolumn{2}{l}{\\textit{IsOAD: Holiday (ref = Is not: Is not)}}', 
+                     'IsOAD: IsHoliday', # 34
+                     NA) # 35
+
+# Read CSV files, format (for estimate)
+coef_df <- lapply(regions, function(region){
+  df <- read.csv(paste0('../results/04_Daily_no_int/',region,'_model_summary.csv')) |> 
+    rename(Parameter = X) |> 
+    mutate(OAD = region)
+}) |> bind_rows() |> 
+  filter(Parameter %in% param_list) |> 
+  mutate(Estimate =  sprintf("%.2f", Estimate)) |> 
+  dplyr::select(OAD, Parameter, Estimate)
+
+# Read CSV files, format (for CI)
+df_est <- lapply(regions, function(region){
+  df <- read.csv(paste0('../results/04_Daily_no_int/',region,'_param_ci.csv')) |> 
+    rename(Parameter = X,
+           L = X2.5..,
+           U = X97.5..) |> 
+    mutate(OAD = region)
+}) |> bind_rows() |> 
+  drop_na(L, U) |> 
+  mutate(IsSig = sign(L) == sign(U),
+         L =  sprintf("%.2f", L),
+         U =  sprintf("%.2f", U)) # no need to filter because was done in analysis!
+
+# Merge them
+df <- full_join(coef_df, df_est, by = c('OAD','Parameter')) |> 
+  mutate(CI = paste0("(", L, ", ", U, ")"),
+         Estimate = if_else(IsSig, 
+                            paste0("\\textbf{",Estimate,"}"),
+                            Estimate)) |> 
+  dplyr::select(OAD, Parameter, Estimate, CI) |> 
+  mutate(Parameter = factor(Parameter, levels = param_list)) |> 
+  arrange(Parameter)
+
+# get length of df
+len <- df |> pull(Parameter) |> unique() |> length()
+
+# get parameter info
+df_p <- df |> 
+  dplyr::select(OAD, Parameter, Estimate) |> 
+  pivot_wider(names_from = OAD, values_from = Estimate, names_vary = 'slowest') |> 
+  mutate(order = 1:len)
+
+# get ci info
+df_c <- df |> 
+  dplyr::select(OAD, Parameter, CI) |> 
+  pivot_wider(names_from = OAD, values_from = CI, names_vary = 'slowest') |> 
+  mutate(order = 1:len + 0.5)
+
+# Check everything is correct
+if (sum(df_p$Parameter != df_c$Parameter) > 0){
+  print("error with df order, troubleshoot")
+}
+
+# Make final df and print for easy copy/paste
+df_f <- list(df_p, df_c) |> 
+  bind_rows() |> 
+  arrange(order) |> 
+  rowwise() |> 
+  mutate(Parameter = if_else(order %%1 == 0.5, NA, Parameter)) 
+
+# Add more rows (in orders variable) for latex formatting
+df_t <- df_f |> 
+  bind_rows(data.frame(order = orders)) |> 
+  arrange(order) |> 
+  dplyr::select(-order) 
+
+df_t$Parameter <- names_for_table
+
+options(knitr.kable.NA = '') # make NA appear blank
+kable(df_t, format = 'latex', 
+      booktabs = TRUE,
+      escape = FALSE,
+      linesep = "") 
+
+kable(df_f |> dplyr::select(-order), format = 'html', booktabs = 'TRUE')
+```

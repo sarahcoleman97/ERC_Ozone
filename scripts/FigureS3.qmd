@@ -1,0 +1,87 @@
+---
+title: "FigureS3"
+format: html
+editor: visual
+---
+
+# Initialize
+
+```{r}
+#| label: init
+#| include: false
+
+library(tidyverse)
+library(ggplot2)
+library(ggh4x)
+
+replot <- TRUE # set to TRUE to actually rerender
+save_figures <- FALSE
+```
+
+# Figure S3: Region-Specific OAD Histogram
+
+```{r, eval = replot}
+#| label: fig_s3
+
+# The usual suspects
+regions <- c("arr", "bpa", "cc", "dfw", "elp", "hgb", "san", "netx", "vic")
+region_labels <- c('Austin-Round Rock',
+                                    'Beaumont-Port Arthur',
+                                    'Corpus Christi',
+                                    'Dallas-Fort Worth',
+                                    'El Paso',
+                                    'Houston-Galveston-Brazoria',
+                                    'Tyler-Longview',
+                                    'San Antonio',
+                                    'Victoria')
+valid_ozone_month_list <- list('arr' = 4:10,
+                               'bpa' = 5:10,
+                               'cc' = 4:10,
+                               'dfw' = 3:10,
+                               'elp' = 5:10,
+                               'hgb' = 3:11,
+                               'netx' = 5:9,
+                               'san' = 4:10,
+                               'vic' = 4:10)
+
+# Formulate custom axis for plotting
+axis <- paste0(rep(2008:2023, each = 12), rep(1:12, times = 16))
+
+# Get OAD count
+oad_df <- readRDS('../data/dates_df') |> 
+  rowwise() |> 
+  mutate(InSeason = Month %in% valid_ozone_month_list[[OAD]]) |> 
+  filter(InSeason) |> 
+  group_by(OAD, Month, Year) |> 
+  summarise(MonthlyOAD = sum(IsOAD), .groups = 'drop') |> 
+  mutate(Region = factor(OAD,
+                         levels = regions,
+                         labels = region_labels),
+         axis = factor(paste0(Year, Month), levels = axis)) |> 
+  filter(MonthlyOAD > 0)
+
+p <- oad_df|> 
+  ggplot(aes(x = axis, y = MonthlyOAD)) +
+  geom_col(fill = 'black', color = 'black') +
+  facet_wrap2(~ Region, 
+              strip = strip_themed(background_x = 
+                                     elem_list_rect(fill = 'white'))) +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),         # remove gridlines
+    panel.background = element_rect(fill = "white", color = NA)) + 
+  scale_x_discrete(breaks = c("20106", "20136", "20166", "20196", "20226"),
+                   labels = c("2010", "2013", "2016", "2019", "2022")) + 
+  labs(y = 'Monthly Ozone Action Day Count', x = 'Year')
+
+if (save_figures){
+  ggsave('../figures/fig_s3.pdf', 
+        plot = p,
+        width = 26,
+        height = 16,
+        units = 'cm')
+}
+
+print(p)
+```

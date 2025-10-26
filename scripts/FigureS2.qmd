@@ -1,0 +1,142 @@
+---
+title: "FigureS2"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: init
+#| include: false
+
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(ggh4x)
+
+eval <- TRUE # set to TRUE to actually rerender
+save_figures <- FALSE
+```
+
+# Figure S2: Ozone levels by month
+
+```{r, eval = eval}
+#| label: fig_s2
+
+## Define regions for plotting
+relevant_regions <- c('arr','bpa','cc',
+                      'dfw', 'elp', 'hgb', 
+                      'netx','san','vic') 
+# Region names
+region_labels <- c('Austin-Round Rock',
+                   'Beaumont-Port Arthur',
+                   'Corpus Christi',
+                   'Dallas-Fort Worth',
+                   'El Paso',
+                   'Houston-Galveston-Brazoria',
+                   'Tyler-Longview',
+                   'San Antonio',
+                   'Victoria')
+
+# Define month labels
+months <- 1:12
+month_labels <- c('1' = 'Jan', '2' = 'Feb', '3' = 'Mar', '4' = 'Apr',
+                  '5' = 'May', '6' = 'Jun', '7' = 'Jul', '8' = 'Aug',
+                  '9' = 'Sep', '10' = 'Oct', '11' = 'Nov', '12' = 'Dec')
+
+# Months where OAD can be forecasted (beg, end)
+valid_ozone_month_list <- list('arr' = 4:10,
+                               'bpa' = 5:10,
+                               'cc' = 4:10,
+                               'dfw' = 3:10,
+                               'elp' = 5:10,
+                               'hgb' = 3:11,
+                               'netx' = 5:9,
+                               'san' = 4:10,
+                               'vic' = 4:10)
+
+# Get OAD counts by month and region for 2023
+oad_df <- readRDS('../data/dates_df') |> 
+  filter(OAD %in% relevant_regions, Year == 2023) |> 
+  group_by(Month, OAD) |> 
+  summarise(MonthlyOAD = sum(IsOAD), .groups = 'drop') |> 
+  mutate(Region = factor(OAD,
+                         levels = relevant_regions,
+                         labels = region_labels)) 
+
+# Make a dataframe showing if a given month/region is in season 
+inSeason_df <- data.frame(OAD = rep(relevant_regions, each = length(months)), 
+                      Month = rep(months, by = length(relevant_regions))) |> 
+  rowwise() |> 
+  mutate(InSeason = Month %in% valid_ozone_month_list[[OAD]],
+         Region = factor(OAD,
+                      levels = rev(relevant_regions),
+                      labels = rev(region_labels)),
+         Month = as.factor(Month))
+
+# Use the in season information to filter the oad count df and format for plotting
+label_data <- full_join(oad_df, inSeason_df, by = c('Region', 'Month','OAD')) |> 
+  filter(InSeason) |> 
+  mutate(Ozone = 3,
+         Month = as.integer(Month)) |>  # spot on y axis where this label will be plotted
+  dplyr::select(Region, Month, MonthlyOAD, Ozone)
+
+# Make a dataframe that shows the start and end point of months by region for plotting
+bar_data <- data.frame('OAD' = factor(relevant_regions),
+                       'Region' = factor(region_labels)) |> 
+  rowwise() |> 
+  mutate(x = head(valid_ozone_month_list[[OAD]],1) - 0.25,
+         xend = tail(valid_ozone_month_list[[OAD]],1) + 0.25,
+         y = 1)
+
+# Read and format ozone dataframe
+ozone_df <- readRDS('../data/ozone_df') |> 
+  ungroup() |> 
+  mutate(Year = year(Date)) |> 
+  filter(OAD %in% relevant_regions, Year == 2023) |> 
+  mutate(Region = factor(OAD,
+                         levels = relevant_regions,
+                         labels = c('Austin-Round Rock',
+                                    'Beaumont-Port Arthur',
+                                    'Corpus Christi',
+                                    'Dallas-Fort Worth',
+                                    'El Paso',
+                                    'Houston-Galveston-Brazoria',
+                                    'Tyler-Longview',
+                                    'San Antonio',
+                                    'Victoria')),
+         Ozone = Ozone * 1000,
+         Month = as.factor(month(Date))) # resolution level
+
+# Actually make the plot
+p <- ozone_df |> ggplot(aes(x = Month, y = Ozone)) + 
+  geom_hline(yintercept = 70, linetype = 'dashed') + 
+  geom_boxplot() + 
+  geom_segment(data = bar_data, 
+               aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE,
+               color = "black", linewidth = 1) + 
+  geom_text(data = label_data, 
+            aes(x = Month, y = Ozone, label = MonthlyOAD),
+            inherit.aes = FALSE,
+            size = 3, fontface = "bold", vjust = 0) + 
+  facet_wrap2(~ Region,
+              strip = strip_themed(background_x = 
+                                     elem_list_rect(fill = 'white'))) +
+  scale_x_discrete(labels = month_labels) + 
+  labs(x = NULL, y = 'Ozone, ppb') + 
+  theme_bw() + 
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),     
+    panel.background = element_rect(fill = "white", color = NA))
+
+if (save_figures){
+  ggsave('../figures/fig_s2.pdf', 
+        plot = p,
+        width = 26,
+        height = 16,
+        units = 'cm')
+}
+
+print(p)
+```
