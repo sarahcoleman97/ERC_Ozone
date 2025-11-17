@@ -1,0 +1,148 @@
+---
+title: "05_timeOfDay_robustness"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: initalize
+#| include: false
+
+library(tidyverse)
+library(emmeans)
+library(ggplot2)
+library(ggh4x)
+library(cowplot)
+library(patchwork)
+
+eval <- FALSE # set this to FALSE to run nothing
+save_figures <- TRUE
+```
+
+# Plotting
+
+```{r, eval = eval}
+#| label: figure_s6
+
+###
+# Get out estiamtes (new)
+regions <- c("arr", "dfw", "elp", "hgb", "san")
+fileNames <- paste0("../results/05_timeOfDay_robustness/", regions, "_contrasts.csv")
+
+# Read data, filter out holidays
+df_list <- lapply(fileNames, read.csv)
+df_list_nh <- lapply(df_list, function(df){
+  d <- df |> 
+    filter(Holiday == 0) |> 
+    select(-Holiday)
+})
+
+# Formatt everything correctly for plotting
+df_new <-  map2(df_list_nh, regions, ~ mutate(.x, OAD = .y)) |>
+  bind_rows() |> 
+  mutate(OAD = if_else(OAD == 'Houston-Galveston-Brazoria', 'Houston-G-B', OAD),
+         OAD = factor(OAD,
+                      labels = c('Austin-Round Rock',
+                                  'Dallas-Fort Worth',
+                                  'El Paso',
+                                  'Houston-G-B',
+                                  'San Antonio')),
+         TrafficType = case_when(TrafficType == 'Bic' ~ 'Bicycle',
+                                 TrafficType == 'Ped' ~ 'Pedestrian'),
+         TimeTraffic = interaction(TimeOfDay, TrafficType,
+                                        sep = " - ")) |> 
+  mutate(TimeTraffic = factor(TimeTraffic, 
+         levels = c("Morning - Bicycle","Morning - Pedestrian",
+                    "Midday - Bicycle","Midday - Pedestrian",
+                    "Afternoon - Bicycle","Afternoon - Pedestrian")),
+         TimeOfDay = factor(TimeOfDay,
+                            levels = c("Morning", "Midday", "Afternoon"))) |> 
+  mutate(estimate = (exp(estimate) - 1)*100,
+         asymp.LCL = (exp(asymp.LCL)-1)*100,
+         asymp.UCL = (exp(asymp.UCL)-1)*100) |> 
+  rename(`Traffic Type` = TrafficType) |> 
+  mutate(Analysis = 'Top 10% Removed')
+
+###
+# Get out estiamtes (OG)
+regions <- c("arr", "dfw", "elp", "hgb", "san")
+fileNames <- paste0("../results/02_timeOfDay/", regions, "_contrasts.csv")
+
+# Read data, filter out holidays
+df_list <- lapply(fileNames, read.csv)
+df_list_nh <- lapply(df_list, function(df){
+  d <- df |> 
+    filter(Holiday == 0) |> 
+    select(-Holiday)
+})
+
+# Formatt everything correctly for plotting
+df_old <-  map2(df_list_nh, regions, ~ mutate(.x, OAD = .y)) |>
+  bind_rows() |> 
+  mutate(OAD = if_else(OAD == 'Houston-Galveston-Brazoria', 'Houston-G-B', OAD),
+         OAD = factor(OAD,
+                      labels = c('Austin-Round Rock',
+                                  'Dallas-Fort Worth',
+                                  'El Paso',
+                                  'Houston-G-B',
+                                  'San Antonio')),
+         TrafficType = case_when(TrafficType == 'Bic' ~ 'Bicycle',
+                                 TrafficType == 'Ped' ~ 'Pedestrian'),
+         TimeTraffic = interaction(TimeOfDay, TrafficType,
+                                        sep = " - ")) |> 
+  mutate(TimeTraffic = factor(TimeTraffic, 
+         levels = c("Morning - Bicycle","Morning - Pedestrian",
+                    "Midday - Bicycle","Midday - Pedestrian",
+                    "Afternoon - Bicycle","Afternoon - Pedestrian")),
+         TimeOfDay = factor(TimeOfDay,
+                            levels = c("Morning", "Midday", "Afternoon"))) |> 
+  mutate(estimate = (exp(estimate) - 1)*100,
+         asymp.LCL = (exp(asymp.LCL)-1)*100,
+         asymp.UCL = (exp(asymp.UCL)-1)*100) |> 
+  rename(`Traffic Type` = TrafficType) |> 
+  mutate(Analysis = 'Original')
+
+df <- list(df_old, df_new) |> bind_rows()
+
+point_size <- 1
+
+p_main <- df |>  
+  ggplot(aes(x = TimeTraffic, y = estimate, color = TimeOfDay, shape = `Traffic Type`)) + 
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  geom_point(size = point_size) + 
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = 0.2) + 
+  facet_grid2(rows = vars(Analysis), cols = vars(OAD),
+              strip = strip_themed(background_x = 
+                                     elem_list_rect(fill = 'white'),
+                                   background_y = 
+                                     elem_list_rect(fill = 'white')),
+              scale = "fixed") + 
+  theme_bw() + 
+  scale_color_manual(values = c("Morning" = "#87bfff",
+                                "Midday" = "#fb8809",
+                                "Afternoon" = "#690001")) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "bottom") + 
+  labs(x = NULL, y = '% traffic change on OADs')
+
+legend_plot <- ggplot(df, aes(x = TimeTraffic, y = estimate, color = TimeOfDay, shape = `Traffic Type`)) +
+  geom_point(size = point_size) +
+  theme_void() +
+  scale_color_manual(name = "Time of Day",
+                     values = c("Morning" = "#87bfff",
+                                "Midday" = "#fb8809",
+                                "Afternoon" = "#690001")) # prism sunrise palette (colorblind safe)
+
+final_plot <- p_main 
+
+if (save_figures){
+  prefix <- "../figures/"
+  ggsave(paste0(prefix,'fig_s6.pdf'),
+         plot = final_plot,
+         width = 18,
+         height = 12,
+         units = 'cm')
+}
+
+print(final_plot)
+```
